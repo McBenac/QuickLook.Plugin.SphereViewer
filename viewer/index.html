@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SphereViewer</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="vendor/psv/core/index.css">
+  <link rel="stylesheet" href="vendor/psv/video-plugin/index.css">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three/three.module.min.js",
+        "@photo-sphere-viewer/core": "./vendor/psv/core/index.module.js",
+        "@photo-sphere-viewer/video-plugin": "./vendor/psv/video-plugin/index.module.js",
+        "@photo-sphere-viewer/equirectangular-video-adapter": "./vendor/psv/equirectangular-video-adapter/index.module.js",
+        "@photo-sphere-viewer/dual-fisheye-adapter": "./vendor/psv/dual-fisheye-adapter/index.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="viewer"></div>
+  <div id="flat" hidden>
+    <button id="flat-back" type="button" title="Back to 360° view (Esc)">360°</button>
+    <p id="flat-error" hidden>Could not load the original file.</p>
+  </div>
+  <div id="message" hidden></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

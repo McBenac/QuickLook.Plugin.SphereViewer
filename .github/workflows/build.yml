@@ -1,0 +1,74 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch QuickLook.Common from the QuickLook release in quicklook-version.txt
+        shell: pwsh
+        run: ./scripts/get-quicklook-common.ps1
+
+      - name: Build plugin
+        run: dotnet build src/QuickLook.Plugin.SphereViewer.csproj -c Release
+
+      - name: Build test harness
+        run: dotnet build tools/Harness/SphereViewer.Harness.csproj -c Release
+
+      - name: Detection test on fixtures
+        shell: pwsh
+        run: |
+          $out = bin/Harness/SphereViewer.Harness.exe detect tests/fixtures/equirect-xmp.jpg tests/fixtures/plain.jpg tests/fixtures/dual-fisheye.insp tests/fixtures/LRV_20260101_120000_01_001.lrv tests/fixtures/VID_20260101_120000_00_001.insv tests/fixtures/VID_20260101_130000_00_002.insv tests/fixtures/GL010001.lrv
+          $out
+          if ($out[0] -notmatch '^Equirectangular photo') { throw 'equirect-xmp.jpg should be detected' }
+          if ($out[1] -notmatch '^-') { throw 'plain.jpg must not be detected' }
+          if ($out[2] -notmatch '^DualFisheye photo') { throw 'dual-fisheye.insp should be detected' }
+          if ($out[3] -notmatch '^DualFisheye video\t') { throw '.lrv should be detected as video' }
+          if ($out[4] -notmatch '^DualFisheye video via LRV_20260101_120000_01_001\.lrv') { throw '.insv should use its .lrv' }
+          if ($out[5] -notmatch '^-') { throw '.insv without .lrv must not be detected' }
+          if ($out[6] -notmatch '^-') { throw 'non-Insta360 .lrv must not be detected' }
+
+      - name: Tilt tests on the fixture trailers (video 30 degrees right, photo tilted forward and right)
+        shell: pwsh
+        run: |
+          $json = bin/Harness/SphereViewer.Harness.exe tilt tests/fixtures/LRV_20260101_120000_01_001.lrv
+          $tilt = $json | ConvertFrom-Json
+          "samples: $($tilt.tEnd.Count), first up: $($tilt.up[0..2] -join ', ')"
+          if ([Math]::Abs($tilt.up[0] - 0.5) -gt 0.01 -or [Math]::Abs($tilt.up[1] - 0.866) -gt 0.01 -or [Math]::Abs($tilt.up[2]) -gt 0.01) { throw 'unexpected tilt' }
+          if ($tilt.tEnd[-1] -lt -0.1 -or $tilt.tEnd[-1] -gt 0.1) { throw 'track not aligned to the last frame' }
+          $photo = bin/Harness/SphereViewer.Harness.exe tilt tests/fixtures/dual-fisheye.insp | ConvertFrom-Json
+          "photo up: $($photo.up -join ', ')"
+          if ([Math]::Abs($photo.up[0] - 0.2506) -gt 0.01 -or [Math]::Abs($photo.up[1] - 0.9023) -gt 0.01 -or [Math]::Abs($photo.up[2] + 0.3509) -gt 0.01) { throw 'unexpected photo tilt' }
+          $none = bin/Harness/SphereViewer.Harness.exe tilt tests/fixtures/plain.jpg
+          if ($none -ne 'null') { throw 'a video file without motion data must give null' }
+          Copy-Item tests/fixtures/plain.jpg $env:RUNNER_TEMP/no-trailer.insp
+          $none = bin/Harness/SphereViewer.Harness.exe tilt $env:RUNNER_TEMP/no-trailer.insp
+          if ($none -ne 'null') { throw 'a photo without motion data must give null' }
+
+      - name: Check that QuickLook.Common is not shipped
+        shell: pwsh
+        run: if (Test-Path bin/Release/QuickLook.Common.dll) { throw 'QuickLook.Common.dll must not be packaged' }
+
+      - name: Pack .qlplugin
+        shell: pwsh
+        run: ./scripts/pack.ps1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: QuickLook.Plugin.SphereViewer
+          path: QuickLook.Plugin.SphereViewer.qlplugin
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: harness
+          path: bin/Harness/

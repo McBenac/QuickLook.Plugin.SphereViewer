@@ -1,0 +1,73 @@
+name: upstream-check
+
+# Once a month: compares what the plugin is built against with the latest QuickLook release and the latest
+# Photo Sphere Viewer / three.js, and keeps one open issue listing what can be updated.
+
+on:
+  schedule:
+    - cron: '17 6 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compare with upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes=()
+
+          # QuickLook: QuickLook.Common and the WebView2 SDK must match what the latest release ships,
+          # because the plugin runs inside QuickLook next to its own HTML viewer.
+          ql=$(tr -d '[:space:]' < quicklook-version.txt)
+          ql_latest=$(gh api repos/QL-Win/QuickLook/releases/latest --jq .tag_name)
+          [ "$ql" = "$ql_latest" ] || notes+=("QuickLook: built against $ql, latest release is $ql_latest. Update \`quicklook-version.txt\`.")
+          wv=$(grep -oP 'Microsoft\.Web\.WebView2" Version="\K[^"]+' src/QuickLook.Plugin.SphereViewer.csproj) \
+            || { echo 'Could not read the WebView2 version of this plugin'; exit 1; }
+          wv_ql=$(gh api "repos/QL-Win/QuickLook/contents/QuickLook.Plugin/QuickLook.Plugin.HtmlViewer/QuickLook.Plugin.HtmlViewer.csproj?ref=$ql_latest" --jq .content \
+            | base64 -d | grep -oP 'Microsoft\.Web\.WebView2" Version="\K[^"]+') \
+            || { echo "Could not read the WebView2 version of QuickLook $ql_latest"; exit 1; }
+          [ "$wv" = "$wv_ql" ] || notes+=("WebView2 SDK: $wv here, QuickLook $ql_latest ships $wv_ql. Update \`src/QuickLook.Plugin.SphereViewer.csproj\`.")
+
+          # Photo Sphere Viewer and three.js are bundled in viewer/vendor/ (versions.json).
+          psv=$(jq -r '."@photo-sphere-viewer/core"' viewer/vendor/versions.json)
+          three=$(jq -r .three viewer/vendor/versions.json)
+          grep -q "Photo Sphere Viewer $psv" viewer/vendor/psv/core/index.module.js \
+            || notes+=("viewer/vendor/versions.json says Photo Sphere Viewer $psv, but the bundled file is a different version.")
+          # three.core.min.js holds the revision (the minor version) as the only string literal "<minor>".
+          grep -q "=\"$(cut -d. -f2 <<<"$three")\"" viewer/vendor/three/three.core.min.js \
+            || notes+=("viewer/vendor/versions.json says three.js $three, but the bundled file is a different revision.")
+          psv_latest=$(curl -fsS https://registry.npmjs.org/@photo-sphere-viewer/core/latest | jq -r .version)
+          [ "$psv" = "$psv_latest" ] || notes+=("Photo Sphere Viewer: bundled $psv, latest $psv_latest.")
+          # three.js may only move within the range Photo Sphere Viewer depends on (for 0.x: the same minor).
+          range=$(curl -fsS "https://registry.npmjs.org/@photo-sphere-viewer/core/$psv_latest" | jq -r '.dependencies.three // .peerDependencies.three // empty')
+          minor=$(grep -oP '^\^0\.\K[0-9]+' <<<"$range" || true)
+          if [ -n "$minor" ]; then
+            three_ok=$(curl -fsS https://registry.npmjs.org/three \
+              | jq -r --arg p "0.$minor." '.versions | keys | map(select(startswith($p) and (test("-") | not))) | sort_by(split(".") | map(tonumber)) | last')
+            [ "$three" = "$three_ok" ] || notes+=("three.js: bundled $three, Photo Sphere Viewer $psv_latest uses $range, newest match $three_ok.")
+          else
+            notes+=("three.js: Photo Sphere Viewer $psv_latest depends on three \`$range\`; check by hand.")
+          fi
+
+          title='Upstream updates available'
+          open=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ ${#notes[@]} -eq 0 ]; then
+            echo "Everything is up to date."
+            [ -z "$open" ] || gh issue close "$open" --comment 'Everything is up to date now.'
+            exit 0
+          fi
+          body=$(printf -- '- %s\n' "${notes[@]}")
+          body+=$'\n\n'"Checked $(date -u +%Y-%m-%d) by the upstream-check workflow. After updating: build, run the tests and check a photo and a video in QuickLook before releasing."
+          printf '%s\n' "$body"
+          if [ -n "$open" ]; then gh issue edit "$open" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
